@@ -7,7 +7,7 @@ One script, one disk, a full system: encryption, your choice of boot loader,
 desktops or window managers, and popular dotfiles.
 
 [![License: GPL v2](https://img.shields.io/badge/license-GPL--2.0--only-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-1.5.4-brightgreen.svg)
+![Version](https://img.shields.io/badge/version-1.6-brightgreen.svg)
 ![Shell](https://img.shields.io/badge/shell-bash-4EAA25.svg?logo=gnubash&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Void%20Linux%20x86__64-478061.svg)
 
@@ -43,7 +43,7 @@ The full guide is in the [manual (PDF)](docs/void-install-manual.pdf).
 | **Filesystem** | ext4, or btrfs with subvolumes (`@`, `@home`, `@snapshots`, ...) |
 | **Encryption** | none, LUKS1 or LUKS2 on the root partition |
 | **Boot loader** | GRUB, Limine, systemd-boot, rEFInd, UKI, EFISTUB, SYSLINUX/EXTLINUX |
-| **Kernels** | the normal `linux` kernel always boots by default; LTS is the fallback; mainline optional |
+| **Kernels** | any of Void's kernels (default, LTS, mainline, or a fixed series such as 6.6), in the boot order you choose |
 | **Swap** | zram, swap file, or none |
 | **C library** | glibc or musl |
 | **Desktops** | Xfce, KDE Plasma, GNOME, MATE, Cinnamon, LXQt, Budgie, LXDE, Enlightenment |
@@ -72,11 +72,26 @@ starts the window manager with a D-Bus session and PipeWire, so sound and
 notifications work. The plain entry is the package's own and starts the bare
 window manager.
 
+### Kernels and boot order
+
+Install any combination of Void's kernels and put them in the order you want:
+the first boots by default, the others are the next entries in the boot menu.
+The list is read from Void's repository, so new kernels show up without an
+update to the script.
+
+<div align="center">
+<img src="docs/screenshots/kernels.png" alt="Choosing kernels and their boot order" width="600">
+</div>
+
+After installing, change the order in `/etc/default/kernel-order` and refresh
+the boot menu (`sudo update-grub`, `sudo update-limine` or
+`sudo update-boot-menu`).
+
 ### Boot loaders
 
-All of them boot the normal kernel by default and list LTS second. The menu
-is rewritten automatically whenever a kernel is installed or removed. Limine
-also refreshes itself after a Limine package update.
+All of them follow your kernel order. The menu is rewritten automatically
+whenever a kernel is installed or removed. Limine also refreshes itself after
+a Limine package update.
 
 Secure Boot must be off: none of the boot loaders is signed.
 
@@ -93,7 +108,7 @@ Other options: `--help`, `--version`.
 
 ## Project status
 
-Version 1.5.4. See the [changelog](CHANGELOG.md) for what changed and exactly
+Version 1.6. See the [changelog](CHANGELOG.md) for what changed and exactly
 what was tested.
 
 Tested so far: the base install, configuration, users, passwords and the

@@ -71,7 +71,7 @@
 #  Keep backups.
 # =============================================================================
 
-SCRIPT_VERSION="1.5.4"
+SCRIPT_VERSION="1.6"
 BACKTITLE="Void Linux installer ${SCRIPT_VERSION}"
 LOG=/tmp/void-install.log
 WARN_FILE=/tmp/void-install.warnings
@@ -101,7 +101,7 @@ GRUB_BOOT=encrypted     # encrypted | separate   (only GRUB + encryption)
 SWAP=zram               # none | zram | file
 SWAP_SIZE=4             # GiB, for SWAP=file
 # Kernels: "linux" is always installed and boots by default. Extra kernels:
-EXTRA_KERNELS="linux-lts"   # any of: linux-lts (the fallback) linux-mainline linuxX.Y
+KERNELS="linux linux-lts"   # boot order, first = default: linux linux-lts linux-mainline linuxX.Y
 LIBC=glibc              # glibc | musl
 MIRROR=https://repo-default.voidlinux.org
 HOST_NAME=void
@@ -208,13 +208,6 @@ without() { # without "<list>" word -> the list minus that word
 }
 
 multilib_on() { has "$GAMING" multilib || has "$GAMING" steam; }
-
-# Header packages for every installed kernel (DKMS builds modules for each)
-kernel_headers() {
-	local k
-	echo linux-headers
-	for k in $EXTRA_KERNELS; do echo "${k}-headers"; done
-}
 
 # GPU vendors found on the PCI bus -> driver keywords
 detect_gpus() {
@@ -820,52 +813,156 @@ menu_swap() {
 	SWAP=$c
 }
 
+# ---- kernels: any of Void's kernels, in the boot order you choose -------------
+# KERNELS is the boot order: the first one boots by default, the others follow
+# in the boot menu. "linux", "linux-lts" and "linux-mainline" are Void's meta
+# packages that follow new releases; "linuxX.Y" stays on one series.
+
+KERNEL_LIST=""   # "package|version|description" lines from the repository
+
+# Fill KERNEL_LIST (call it directly, not in $(...), so the result is kept).
+load_kernel_list() {
+	local out
+	[[ -n $KERNEL_LIST ]] && return 0
+	ui --infobox "Looking up the kernels in the repository ..." 3 52 || true
+	XBPS_ARCH="$(xbps_arch)" xbps-install -S -R "$(repo_url)" >/dev/null 2>&1 || true
+	out=$(XBPS_ARCH="$(xbps_arch)" xbps-query -R --repository="$(repo_url)" --regex \
+		-s '^linux([0-9]+\.[0-9]+|-lts|-mainline)?-[0-9]' 2>/dev/null |
+		sed -nE 's/^\[.\] (linux([0-9]+\.[0-9]+|-lts|-mainline)?)-([0-9][^ ]*) +(.*)$/\1|\3|\4/p') || true
+	if [[ -z $out ]]; then
+		# Offline: a known list. Every name is checked when the packages install.
+		out=$(printf '%s\n' "linux||meta" "linux-lts||meta" "linux-mainline||meta" \
+			"linux6.18||series" "linux6.12||series" "linux6.6||series" "linux6.1||series" "linux5.15||series" "linux5.10||series")
+	fi
+	# meta packages first, then the series packages, newest first
+	KERNEL_LIST=$(
+		grep -E '^linux\|' <<<"$out"
+		grep -E '^linux-lts\|' <<<"$out"
+		grep -E '^linux-mainline\|' <<<"$out"
+		grep -E '^linux[0-9]' <<<"$out" | sort -t'|' -k1,1 -rV
+	) || true
+}
+
+kernel_ver() { # package -> its version without the revision ("6.12.117"), or ""
+	local v
+	v=$(awk -F'|' -v p="$1" '$1 == p { print $2; exit }' <<<"$KERNEL_LIST")
+	printf '%s' "${v%_*}"
+}
+
+kernel_label() { # package -> one line for the menus
+	local p=$1 v s d lts main tag=""
+	v=$(kernel_ver "$p")
+	d=$(kernel_ver linux) lts=$(kernel_ver linux-lts) main=$(kernel_ver linux-mainline)
+	case $p in
+		linux) printf "Void's default, follows new releases (now %s)" "${v:-6.x}" ;;
+		linux-lts) printf 'LTS, follows new LTS releases (now %s)' "${v:-6.x}" ;;
+		linux-mainline) printf 'Mainline, for experts (now %s)' "${v:-7.x}" ;;
+		*)
+			s=${p#linux}
+			if [[ -n $d && $s == "$d" ]]; then tag="  = Void's default"; fi
+			if [[ -n $lts && $s == "$lts" ]]; then tag="  = LTS"; fi
+			if [[ -n $main && $s == "$main" ]]; then tag="  = mainline"; fi
+			printf 'Kernel %s, stays on %s%s' "${v:-$s}" "$s" "$tag"
+			;;
+	esac
+}
+
 lbl_kernels() {
-	local k out="linux (default)"
-	for k in $EXTRA_KERNELS; do
-		case $k in
-			linux-lts) out+=", linux-lts (fallback)" ;;
-			*) out+=", $k" ;;
-		esac
+	local k out=""
+	for k in $KERNELS; do out+="${out:+ > }$k"; done
+	printf '%s' "${out:-\\Z1(none)\\Zn}"
+}
+
+# Header packages for every kernel (DKMS builds modules for each)
+kernel_headers() {
+	local k
+	for k in $KERNELS; do echo "${k}-headers"; done
+}
+
+kernel_pick() { # tick the kernels to install; new ones join at the end
+	local sel k p out=""
+	local -a items=()
+	while IFS='|' read -r p _ _; do
+		[[ -n $p ]] && items+=("$p" "$(kernel_label "$p")")
+	done <<<"$KERNEL_LIST"
+	sel=$(checklist "Kernels" "Tick every kernel to install. Newly ticked ones are added at the end of the boot order; reorder them on the next screen." "$KERNELS" "${items[@]}") || return 1
+	for k in $KERNELS; do
+		if has "$sel" "$k"; then out+=" $k"; fi
 	done
-	printf '%s' "$out"
+	for k in $sel; do
+		if ! has "$out" "$k"; then out+=" $k"; fi
+	done
+	KERNELS=$(trim "$out")
+}
+
+kernel_move() { # kernel_move <package>: boot first / up / down / remove
+	local k=$1 c i pos=0 n t
+	local -a ks
+	read -ra ks <<<"$KERNELS"
+	n=${#ks[@]}
+	for i in "${!ks[@]}"; do
+		if [[ ${ks[i]} == "$k" ]]; then pos=$i; fi
+	done
+	c=$(ui --title " $k " --menu "$(kernel_label "$k")\n\nNow number $((pos + 1)) of $n in the boot order." 14 72 4 \
+		first "Boot first (makes it the default)" \
+		up "Move up" \
+		down "Move down" \
+		remove "Remove") || return 1
+	case $c in
+		first) KERNELS="$k $(without "$KERNELS" "$k")" ;;
+		up)
+			if ((pos > 0)); then
+				t=${ks[pos - 1]} ks[pos - 1]=${ks[pos]} ks[pos]=$t
+				KERNELS="${ks[*]}"
+			fi
+			;;
+		down)
+			if ((pos < n - 1)); then
+				t=${ks[pos + 1]} ks[pos + 1]=${ks[pos]} ks[pos]=$t
+				KERNELS="${ks[*]}"
+			fi
+			;;
+		remove) KERNELS=$(without "$KERNELS" "$k") ;;
+	esac
+	KERNELS=$(trim "$KERNELS")
 }
 
 menu_kernel() {
-	local sel cur="" k custom="" c re='^linux[0-9]+\.[0-9]+$'
-	local -a list=()
-	for k in $EXTRA_KERNELS; do
-		case $k in
-			linux-lts | linux-mainline) cur+=" $k" ;;
-			*) cur+=" custom"; custom+="${custom:+ }$k" ;;
-		esac
-	done
-	sel=$(checklist "Kernels" "The normal kernel (linux) is ALWAYS installed and boots by default.\nTick extra kernels to install next to it; the LTS kernel is the fallback (2nd boot entry)." "$cur" \
-		linux-lts "Long-term support kernel - fallback (recommended)" \
-		linux-mainline "Newest mainline kernel (for experts)" \
-		custom "Specific kernel series, e.g. linux6.6") || return 1
-	for k in $sel; do
-		case $k in
-			linux-lts | linux-mainline) list+=("$k") ;;
-		esac
-	done
-	if has "$sel" custom; then
-		c=$(ui --title " Kernel series " --inputbox "Kernel packages to add, separated by spaces (e.g. linux6.6 linux6.1). Search them later with: xbps-query -Rs '^linux[0-9]'" 10 76 "$custom") || return 1
-		for k in $c; do
-			if ! [[ $k =~ $re ]]; then
-				msg "'$k' is not a kernel series package. Use names like linux6.6." "Kernels"
-				return 1
-			fi
-			has "${list[*]}" "$k" || list+=("$k")
+	local orig=$KERNELS c="" k i n
+	local -a items
+	load_kernel_list
+	while :; do
+		items=()
+		i=0
+		for k in $KERNELS; do
+			i=$((i + 1))
+			items+=("$k" "$i. $(kernel_label "$k")")
 		done
-	fi
-	if ! has "${list[*]}" linux-lts; then
-		if ! yesno "Without linux-lts there is no fallback kernel to boot if the normal kernel breaks after an update.\n\nContinue without the LTS fallback?" "No fallback" 1; then
-			list=(linux-lts "${list[@]}")
-		fi
-	fi
-	EXTRA_KERNELS="${list[*]}"
-	return 0
+		items+=(add "+ Add or remove kernels ..." "done" "= Done")
+		n=$((${#items[@]} / 2))
+		c=$(ui --title " Kernels and boot order " --default-item "${c:-done}" \
+			--ok-label Select --cancel-label Back --menu \
+			"Kernels to install, in boot order: number 1 boots by default, the others are the next entries in the boot menu (fallbacks). Select a kernel to move or remove it." \
+			$((n + 9)) 78 "$n" "${items[@]}") || {
+			KERNELS=$orig
+			return 1
+		}
+		case $c in
+			done)
+				if [[ -z $KERNELS ]]; then
+					msg "Pick at least one kernel." "Kernels"
+					continue
+				fi
+				if [[ $KERNELS != *" "* ]] &&
+					! yesno "Only one kernel: if it fails to boot after an update there is no other kernel to choose in the boot menu.\n\nContinue with one kernel?" "One kernel" 1; then
+					continue
+				fi
+				return 0
+				;;
+			add) kernel_pick || true ;;
+			*) kernel_move "$c" || true ;;
+		esac
+	done
 }
 
 menu_libc() {
@@ -1599,7 +1696,7 @@ validate() {
 		msg "With musl, the proprietary NVIDIA driver, Discord and the gaming options are not available (they need glibc)." "musl"
 		return 1
 	fi
-	if [[ $nv == nvidia470 || $nv == nvidia390 ]] && has "$EXTRA_KERNELS" linux-mainline; then
+	if [[ $nv == nvidia470 || $nv == nvidia390 ]] && { has "$KERNELS" linux-mainline || has "$KERNELS" "linux$(kernel_ver linux-mainline)"; }; then
 		yesno "Legacy NVIDIA drivers often fail to build against the mainline kernel. Continue anyway?" "NVIDIA" 1 || return 1
 	fi
 	if [[ -n $GAMING || -n $nv ]] && ! desktop_on; then
@@ -1616,6 +1713,11 @@ validate() {
 	fi
 	if [[ $BOOTLOADER == efistub || $BOOTLOADER == uki ]] && [[ ! -d /sys/firmware/efi/efivars ]]; then
 		msg "$(lbl_boot) writes UEFI boot entries, but the EFI variables (/sys/firmware/efi/efivars) are not available." "Boot loader"
+		return 1
+	fi
+
+	if [[ -z $KERNELS ]]; then
+		msg "Choose at least one kernel (menu item Kernel)." "Kernel"
 		return 1
 	fi
 
@@ -1903,11 +2005,32 @@ mount_chroot_fs() {
 	fi
 }
 
+# base-system depends on the "linux" meta package. When it is not one of the
+# chosen kernels, tell xbps to ignore it (Void's documented way), so only the
+# chosen kernels are installed - now and on every update.
+write_kernel_ignore() {
+	local f="$TARGET/etc/xbps.d/10-void-install-kernels.conf"
+	if has "$KERNELS" linux; then
+		rm -f "$f"
+		return 0
+	fi
+	mkdir -p "${f%/*}"
+	cat >"$f" <<'EOF'
+# Written by void-install.sh: the "linux" meta package was not chosen, so it
+# is not installed even though base-system depends on it. Delete this file
+# (then: xbps-install linux) to get Void's default kernel back.
+ignorepkg=linux
+ignorepkg=linux-headers
+EOF
+	echo "Kernels: $KERNELS (the 'linux' meta package is ignored)"
+}
+
 step_bootstrap() {
 	local -a pkgs=(base-system)
 	if encrypted; then pkgs+=(cryptsetup); fi
 	mkdir -p "$TARGET/var/db/xbps/keys"
 	cp -a /var/db/xbps/keys/. "$TARGET/var/db/xbps/keys/"
+	write_kernel_ignore
 	mount_chroot_fs
 	echo "Repository:    $(repo_url)"
 	echo "Architecture:  $(xbps_arch)"
@@ -2092,9 +2215,10 @@ EOF
 }
 
 target_packages() {
-	echo linux
 	local k
-	for k in $EXTRA_KERNELS; do echo "$k"; done
+	for k in $KERNELS; do echo "$k"; done
+	# firmware, dracut and the rest that the "linux" meta package normally brings
+	if ! has "$KERNELS" linux; then echo linux-base; fi
 	case $BOOTLOADER in
 		grub)
 			echo grub
@@ -2952,7 +3076,7 @@ install_grub() {
 			echo 'GRUB_ENABLE_CRYPTODISK=y' >>"$cfg"
 		fi
 	fi
-	# Flat menu (no "Advanced options" submenu), so the LTS fallback is visible.
+	# Flat menu (no "Advanced options" submenu), so every kernel is visible.
 	if grep -qE '^#?GRUB_DISABLE_SUBMENU=' "$cfg"; then
 		sed -i -E 's/^#?GRUB_DISABLE_SUBMENU=.*/GRUB_DISABLE_SUBMENU=y/' "$cfg"
 	else
@@ -2974,30 +3098,46 @@ install_grub() {
 	fi
 }
 
-# /usr/local/bin/void-kernel-order: the boot order used by every boot loader.
+# /usr/local/bin/void-kernel-order: the boot order used by every boot loader,
+# set by KERNEL_ORDER in /etc/default/kernel-order.
 write_kernel_order() { # write_kernel_order <root dir>
 	local root=$1
-	mkdir -p "$root/usr/local/bin"
+	mkdir -p "$root/usr/local/bin" "$root/etc/default"
+	cat >"$root/etc/default/kernel-order" <<EOF
+# Boot order of the kernels (void-install.sh). Package names, first = boots by
+# default; the others follow in the boot menu. Older versions and kernels not
+# listed come last, newest first. linux, linux-lts and linux-mainline follow new releases;
+# linuxX.Y stays on one series. After a change, refresh the boot menu:
+#   GRUB: update-grub   Limine: update-limine   others: update-boot-menu
+KERNEL_ORDER="$KERNELS"
+EOF
 	cat >"$root/usr/local/bin/void-kernel-order" <<'EOF'
 #!/bin/sh
 # void-kernel-order - list the kernels in /boot in boot order, one per line:
 #     <version> <role>        role: default | lts | mainline | other
-# default = the series of Void's "linux" package (always boots first),
-# lts = "linux-lts" (the fallback), mainline = "linux-mainline", then others.
-# Installed by void-install.sh; used by update-limine and GRUB.
+# The order is KERNEL_ORDER in /etc/default/kernel-order: package names, the
+# first boots by default (role "default"). The newest version of each listed
+# kernel comes first, in that order; then all others, newest first.
+# Installed by void-install.sh; used by GRUB, Limine and update-boot-menu.
 R="${ROOTDIR:-}"
 case $R in
 	.) R=$(pwd) ;;
 	/) R="" ;;
 esac
+KERNEL_ORDER="linux linux-lts linux-mainline"
+[ -r "$R/etc/default/kernel-order" ] && . "$R/etc/default/kernel-order"
 
-series_of() { # meta package -> kernel series (X.Y) it depends on
+series_of() { # package -> kernel series (X.Y)
+	case $1 in
+		linux[0-9]*.[0-9]*) echo "${1#linux}"; return 0 ;;
+	esac
 	if [ -n "$R" ]; then
 		xbps-query -r "$R" -x "$1" 2>/dev/null
 	else
 		xbps-query -x "$1" 2>/dev/null
 	fi | sed -n 's/^linux\([0-9][0-9]*\.[0-9][0-9]*\)\([<>=].*\)\{0,1\}$/\1/p' | head -n 1
 }
+ser() { echo "$1" | sed 's/^\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/'; }
 
 versions=$(
 	for k in "$R"/boot/vmlinuz-*; do
@@ -3008,36 +3148,44 @@ versions=$(
 )
 [ -n "$versions" ] || exit 0
 
-d=$(series_of linux)
+seen=" "
+order=""
+add() { # add <version>, once
+	case $seen in *" $1 "*) return 0 ;; esac
+	seen="$seen$1 "
+	order="$order $1"
+}
+# the newest version of each chosen kernel, in the chosen order ...
+for p in $KERNEL_ORDER; do
+	s=$(series_of "$p")
+	[ -n "$s" ] || continue
+	for v in $versions; do
+		if [ "$(ser "$v")" = "$s" ]; then
+			add "$v"
+			break
+		fi
+	done
+done
+# ... then everything else (older versions kept after updates, other kernels)
+for v in $versions; do add "$v"; done
+
 l=$(series_of linux-lts)
 m=$(series_of linux-mainline)
-
-list=$(for v in $versions; do
-	s=$(echo "$v" | sed 's/^\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/')
-	if [ -n "$d" ] && [ "$s" = "$d" ]; then r=default
+n=0
+for v in $order; do
+	n=$((n + 1))
+	s=$(ser "$v")
+	if [ "$n" = 1 ]; then r=default
 	elif [ -n "$l" ] && [ "$s" = "$l" ]; then r=lts
 	elif [ -n "$m" ] && [ "$s" = "$m" ]; then r=mainline
 	else r=other; fi
 	echo "$v $r"
-done)
-
-# No kernel of the "linux" series found (e.g. the package database could not be
-# read, or Void just moved "linux" to a new series): the newest kernel that is
-# neither LTS nor mainline boots by default.
-if ! echo "$list" | grep -q ' default$'; then
-	first=$(echo "$list" | awk '$2 == "other" { print $1; exit }')
-	if [ -n "$first" ]; then
-		list=$(echo "$list" | awk -v f="$first" '$1 == f { $2 = "default" } { print }')
-	fi
-fi
-for r in default lts mainline other; do
-	echo "$list" | awk -v r="$r" '$2 == r'
 done
 EOF
 	chmod 755 "$root/usr/local/bin/void-kernel-order"
 }
 
-# GRUB: default entry = normal kernel, fallback = LTS (regenerated by every
+# GRUB: default entry = first kernel of the order, fallback = the second (regenerated by every
 # grub-mkconfig, which Void's 50-grub kernel hook runs on each kernel change).
 write_grub_order() { # write_grub_order <root dir>
 	local root=$1
@@ -3045,9 +3193,9 @@ write_grub_order() { # write_grub_order <root dir>
 	mkdir -p "$root/etc/grub.d"
 	cat >"$root/etc/grub.d/99_void-kernel-order" <<'EOF'
 #!/bin/sh
-# Installed by void-install.sh: boot the normal "linux" kernel by default and
-# fall back to the LTS kernel if GRUB cannot load it. Order comes from
-# /usr/local/bin/void-kernel-order. Delete this file and run update-grub to
+# Installed by void-install.sh: boot the first kernel of the chosen order
+# (/etc/default/kernel-order) by default and fall back to the second one if GRUB
+# cannot load it. Order comes from /usr/local/bin/void-kernel-order. Delete this file and run update-grub to
 # get GRUB's usual "newest kernel first" behaviour back.
 # Never fail: an error here would stop grub-mkconfig from writing grub.cfg.
 lib="${pkgdatadir:-/usr/share/grub}/grub-mkconfig_lib"
@@ -3058,8 +3206,8 @@ order=$(ROOTDIR=/ /usr/local/bin/void-kernel-order 2>/dev/null) || exit 0
 id=$(grub_get_device_id "${GRUB_DEVICE}") || exit 0
 [ -n "$id" ] || exit 0
 def=$(echo "$order" | awk 'NR == 1 { print $1 }')
-lts=$(echo "$order" | awk '$2 == "lts" { print $1; exit }')
-echo "# void-install.sh: normal kernel by default, LTS kernel as fallback"
+lts=$(echo "$order" | awk 'NR == 2 { print $1 }')
+echo "# void-install.sh: kernel order from /etc/default/kernel-order"
 echo "if [ -z \"\${boot_once}\" ]; then"
 echo "  set default=\"gnulinux-${def}-advanced-${id}\""
 echo "fi"
@@ -3145,7 +3293,7 @@ fi
 	echo "$order" | while read -r v role; do
 		case $role in
 			default) label="$v" ;;
-			lts) label="$v, LTS fallback" ;;
+			lts) label="$v, LTS" ;;
 			mainline) label="$v, mainline" ;;
 			*) label="$v" ;;
 		esac
@@ -3340,7 +3488,7 @@ def=$(echo "$order" | awk 'NR == 1 { print $1 }')
 
 title_of() { # title_of <version> <role>
 	case $2 in
-		lts) echo "$BOOT_BRAND ($1, LTS fallback)" ;;
+		lts) echo "$BOOT_BRAND ($1, LTS)" ;;
 		mainline) echo "$BOOT_BRAND ($1, mainline)" ;;
 		*) echo "$BOOT_BRAND ($1)" ;;
 	esac
@@ -3820,7 +3968,7 @@ step_finalize() {
 	esac
 	verify_install
 	echo "Boot order (first = default):"
-	in_target /usr/local/bin/void-kernel-order | sed 's/ default$/  <- default/; s/ lts$/  <- LTS fallback/; s/^/    /' || true
+	in_target /usr/local/bin/void-kernel-order | awk '{ printf "    %d. %s%s\n", NR, $1, (NR == 1 ? "  <- default" : ($2 == "lts" ? "  (LTS)" : "")) }' || true
 	cp "$LOG" "$TARGET/var/log/void-install.log" 2>/dev/null || true
 	chmod 600 "$TARGET/var/log/void-install.log" 2>/dev/null || true
 	sync
@@ -3875,7 +4023,7 @@ log_settings() {
 	{
 		echo "void-install.sh $SCRIPT_VERSION - $(date)"
 		echo "firmware=$FIRMWARE efi_bits=$EFI_BITS disk=$DISK fs=$FS enc=$ENC bootloader=$BOOTLOADER grub_boot=$GRUB_BOOT"
-		echo "swap=$SWAP swap_size=$SWAP_SIZE kernels=linux,${EXTRA_KERNELS// /,} libc=$LIBC mirror=$MIRROR"
+		echo "swap=$SWAP swap_size=$SWAP_SIZE kernels=${KERNELS// /,} libc=$LIBC mirror=$MIRROR"
 		echo "hostname=$HOST_NAME keymap=$KEYMAP locale=$LOCALE timezone=$TIMEZONE user=$USER_NAME"
 		echo "net=$NET desktop=$DESKTOP dm=$(desktop_dm) dotfiles=$DOTS extras=$EXTRA_PKGS"
 		echo "gpu=$GPU (effective: $(gpu_list)) apps=$APPS gaming=$GAMING xsrc=$XSRC_PKGS xsrc_setup=$XSRC_SETUP"

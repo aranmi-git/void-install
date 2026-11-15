@@ -3,6 +3,33 @@
 All notable changes to `void-install.sh`. Versions 1.0 to 1.5 were developed
 before this repository existed; their history is summarised at the end.
 
+## 1.6 (2026-11-15)
+
+### Added
+- **Any kernels, in your boot order.** The Kernel menu lists every kernel in
+  Void's repository (read live, so new ones appear without a script update):
+  `linux`, `linux-lts`, `linux-mainline` and each `linuxX.Y` series. Tick any
+  combination, then set the order: select a kernel to make it boot first,
+  move it up or down, or remove it. The first boots by default; the others
+  are the next boot menu entries.
+- The order is kept in `/etc/default/kernel-order` (`KERNEL_ORDER="..."`)
+  and used by every boot loader. Edit it after installing and refresh the
+  boot menu to change it.
+
+### Changed
+- `linux` (Void's default kernel, currently 6.18) is no longer forced. Void's
+  base system depends on it, so when it is left out the installer adds
+  `ignorepkg=linux` to `/etc/xbps.d/10-void-install-kernels.conf`, keeping it
+  out on updates too, and installs `linux-base` for the firmware and
+  initramfs tools it normally brings. Checked against Void's repository:
+  choosing only 6.12 installs 6.12 and the firmware, and nothing else.
+- GRUB's automatic fallback is the second kernel in your order (was always
+  LTS).
+- When several versions of one kernel are installed, the newest version of
+  each chosen kernel comes first, in your order; older versions follow.
+- Boot menu labels: the LTS kernel is marked "LTS" (was "LTS fallback").
+- DKMS (NVIDIA) installs headers for exactly the chosen kernels.
+
 ## 1.5.4 (2026-11-14)
 
 ### Removed
