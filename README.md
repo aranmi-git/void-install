@@ -11,7 +11,7 @@ desktops or window managers, and popular dotfiles.
 ![Shell](https://img.shields.io/badge/shell-bash-4EAA25.svg?logo=gnubash&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Void%20Linux%20x86__64-478061.svg)
 
-<img src="docs/screenshots/main-menu.svg" alt="The main menu of void-install.sh" width="720">
+<img src="docs/screenshots/main-menu.png" alt="The main menu of void-install.sh" width="720">
 
 </div>
 
@@ -56,8 +56,8 @@ The full guide is in the [manual (PDF)](docs/void-install-manual.pdf).
 | **Extras** | xbps-src package builds, LARBS-style bootstrap from a programs list |
 
 <div align="center">
-<img src="docs/screenshots/desktops.svg" alt="Choosing desktops and window managers" width="49%">
-<img src="docs/screenshots/boot-loader.svg" alt="Choosing a boot loader" width="49%">
+<img src="docs/screenshots/desktops.png" alt="Choosing desktops and window managers" width="49%">
+<img src="docs/screenshots/boot-loader.png" alt="Choosing a boot loader" width="49%">
 </div>
 
 ### Desktops and window managers
