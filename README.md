@@ -7,7 +7,7 @@ One script, one disk, a full system: encryption, your choice of boot loader,
 desktops or window managers, and popular dotfiles.
 
 [![License: GPL v2](https://img.shields.io/badge/license-GPL--2.0--only-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-1.6-brightgreen.svg)
+![Version](https://img.shields.io/badge/version-1.7-brightgreen.svg)
 ![Shell](https://img.shields.io/badge/shell-bash-4EAA25.svg?logo=gnubash&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Void%20Linux%20x86__64-478061.svg)
 
@@ -33,6 +33,12 @@ Set the options in the menu and choose **Install**. Only four items are
 required: the disk, the root password, a user, and (if you encrypt) a
 passphrase. Everything else has a sensible default.
 
+Or start from a preset and answer only the disk, passwords and users:
+
+```sh
+bash void-install.sh --preset xfce-desktop
+```
+
 The full guide is in the [manual (PDF)](docs/void-install-manual.pdf).
 
 ## What it can do
@@ -53,6 +59,8 @@ The full guide is in the [manual (PDF)](docs/void-install-manual.pdf).
 | **Graphics** | Intel, AMD, NVIDIA (several driver series), virtual machines; auto-detected |
 | **Software** | common applications, Steam / Wine / Lutris with 32-bit libraries, Flatpak |
 | **Users** | several users, each with a sudo level |
+| **Peripherals** | Logitech, Corsair, Razer, RGB, fans, controllers, wheels, tablets, Bluetooth, key remappers; background services set up for runit |
+| **Presets** | save all settings to a file; reinstall with only disk, passwords and users; fingerprint-checked IDs |
 | **Extras** | xbps-src package builds, LARBS-style bootstrap from a programs list |
 
 <div align="center">
@@ -87,6 +95,71 @@ After installing, change the order in `/etc/default/kernel-order` and refresh
 the boot menu (`sudo update-grub`, `sudo update-limine` or
 `sudo update-boot-menu`).
 
+### Peripherals
+
+Tick what you own; what is plugged in during the install is ticked for you.
+Programs that run in the background get a runit service, enabled at boot.
+
+| Devices | Tools |
+|---|---|
+| Logitech | Solaar, logiops (service), g810-led, OpenLogi* |
+| Corsair | OpenLinkHub* (service, web UI on port 27003) **or** ckb-next (service) |
+| Razer | OpenRazer + Polychromatic |
+| Gaming mice | Piper (service) |
+| RGB, fans | OpenRGB, CoolerControl (service) |
+| Controllers, wheels | xone, xpadneo, PlayStation/Switch/Steam access rules, SC Controller, AntiMicroX, Oversteer |
+| Other | Bluetooth (service), Wacom tablets, input-remapper (service), keyd (service), kanata |
+
+\* Not in Void's repository: installed from a pinned release or commit,
+checked against a fixed checksum or signature-verified hash, and **not updated
+by xbps**. Everything else comes from Void's repository.
+
+OpenLinkHub and ckb-next drive the same Corsair devices, so the menu lets you
+pick one. OpenLinkHub covers much more (iCUE LINK, AIO coolers, Commander
+hubs, memory lighting); ckb-next is in Void's repository and updates with
+the system, but handles only keyboards and mice.
+
+<div align="center">
+<img src="docs/screenshots/peripherals.png" alt="The Peripherals menu" width="49%">
+<img src="docs/screenshots/corsair.png" alt="Choosing OpenLinkHub or ckb-next" width="49%">
+</div>
+
+### Presets
+
+A preset is a small text file with every setting except the disk, the
+passwords and the users. Save one from the **Preset** menu item, then load it
+on any computer:
+
+| Load from | Example |
+|---|---|
+| a name in [`presets/`](presets) | `--preset gaming-kde` |
+| a file | `--preset /mnt/usb/my.preset` |
+| an https link | `--preset https://example.org/my.preset` |
+
+Every preset has an ID, for example `xfce-desktop@b3a18756ad65416c`: the
+name plus a fingerprint (SHA-256) of its settings. Add the `@...` part when
+loading and the installer refuses a preset that was changed. Each install
+also leaves its settings in `/root/void-install.preset`.
+
+<div align="center">
+<img src="docs/screenshots/preset.png" alt="Loading a preset" width="600">
+</div>
+
+A preset cannot run commands: only known settings are read, and each is
+checked. It can name a programs list or dotfiles repository, which do run
+code; the load screen points these out. Example presets:
+
+| Name | ID | What it installs |
+|---|---|---|
+| `minimal` | `minimal@6d574c6ac315d064` | console server: LTS kernel, dhcpcd, SSH |
+| `xfce-desktop` | `xfce-desktop@b3a18756ad65416c` | Xfce with everyday apps, btrfs |
+| `kde-desktop` | `kde-desktop@818844b9fa853e35` | KDE Plasma with SDDM, btrfs |
+| `sway-wayland` | `sway-wayland@88b23e89577d0c6a` | Sway with EndeavourOS dotfiles, greetd |
+| `i3-cachyos` | `i3-cachyos@a0a215974ad079f5` | i3 with CachyOS dotfiles |
+| `gaming-kde` | `gaming-kde@04206733a1ab82c9` | KDE, Steam, Wine, Lutris, GameMode, Discord |
+
+All use LUKS2 encryption and GRUB; change anything in the menu after loading.
+
 ### Boot loaders
 
 All of them follow your kernel order. The menu is rewritten automatically
@@ -104,11 +177,11 @@ dotfiles later:
 sudo bash void-install.sh --bootstrap
 ```
 
-Other options: `--help`, `--version`.
+Other options: `--preset`, `--help`, `--version`.
 
 ## Project status
 
-Version 1.6. See the [changelog](CHANGELOG.md) for what changed and exactly
+Version 1.7. See the [changelog](CHANGELOG.md) for what changed and exactly
 what was tested.
 
 Tested so far: the base install, configuration, users, passwords and the

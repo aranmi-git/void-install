@@ -3,6 +3,71 @@
 All notable changes to `void-install.sh`. Versions 1.0 to 1.5 were developed
 before this repository existed; their history is summarised at the end.
 
+## 1.7 (2026-11-16)
+
+### Added
+- **Presets.** Save every setting except the disk, the passwords and the
+  users to a small text file, and install the same system again by answering
+  only those. Use the new **Preset** item at the top of the main menu (load,
+  save, show ID), or start with `--preset`:
+
+      bash void-install.sh --preset xfce-desktop
+      bash void-install.sh --preset /mnt/usb/my.preset@1a2b3c4d5e6f7a8b
+      bash void-install.sh --preset https://example.org/my.preset
+
+  A bare name is taken from the `presets/` folder of this repository
+  (`VOID_INSTALL_PRESETS` points it at a fork). After loading, the installer
+  asks for the disk, the root password, a user and, if encrypted, the
+  passphrase, then opens the main menu with Install selected.
+- **Preset IDs.** Every preset has an ID such as
+  `xfce-desktop@b3a18756ad65416c`: its name plus the first 16 hex digits of
+  the SHA-256 of its settings. Comments and blank lines do not change it; any
+  setting does. Loading with `@<digits>` (16 to 64) refuses a preset that
+  does not match, and changes nothing.
+- **Peripherals menu.** 21 choices; the ones matching connected hardware
+  are ticked the first time. From Void's repository: Solaar, logiops,
+  g810-led, Piper, ckb-next, OpenRazer + Polychromatic, OpenRGB,
+  CoolerControl, xone, xpadneo, controller access rules, SC Controller,
+  AntiMicroX, Oversteer, Wacom, input-remapper, keyd, kanata and Bluetooth.
+  Kernel headers are added for the drivers that DKMS builds.
+- **Two tools from outside Void**, each pinned and checked:
+  - OpenLogi 0.9.0 (Logitech): the project's Linux build, SHA-256 pinned
+    (the release's minisign signature was verified when pinning). Unpacked
+    into `/usr/local`; its agent starts with the desktop session.
+  - OpenLinkHub 0.9.4 (Corsair): built from a pinned commit with Void's Go;
+    runs as its own `openlinkhub` user under a new runit service.
+  Build tools are removed again afterwards. A failed download or build is a
+  warning, not a failed install.
+- **Corsair: OpenLinkHub or ckb-next.** They drive the same devices, so the
+  menu explains the difference and lets you pick one.
+- runit services enabled as needed: bluetoothd, logid, ratbagd,
+  ckb-next-daemon, coolercontrold, input-remapper, keyd, openlinkhub. Users join the `bluetooth` and `keyd` groups when those are
+  picked; logiops gets a starter `/etc/logid.cfg`.
+- Six example presets: `minimal`, `xfce-desktop`, `kde-desktop`,
+  `sway-wayland`, `i3-cachyos`, `gaming-kde`.
+- Each install saves its own settings to `/root/void-install.preset` on the
+  new system.
+
+### Security
+- A preset is never run or sourced. Only 28 known settings are read, each
+  value is checked against the same rules as the menus (or stricter), and
+  one bad line rejects the whole file. Disk, passwords and user names are
+  refused if present. Files over 64 KiB or with control characters are
+  refused.
+- Only `https://` downloads, with redirects limited to https, and no links
+  with a user name or token. A programs list or dotfiles repository in a
+  preset must also be an https link (or `git@`); the load screen lists
+  these outside sources so you can decide whether to trust them.
+- **No passwords are ever stored in a preset**: not the root password, user
+  passwords, the encryption passphrase, nor user names or sudo levels. The
+  installer never writes them, and a file that looks like it holds one (a
+  line such as `password=...` or `# luks passphrase: ...`, also in comments)
+  is refused when loaded. Tested: a full simulated install leaves no
+  password in any file of the new system, its log or its saved preset.
+- Package names in Extra packages and xbps-src (menu and presets) must start
+  with a letter or digit, so a value cannot pass options such as `-R` to
+  xbps-install.
+
 ## 1.6 (2026-11-15)
 
 ### Added

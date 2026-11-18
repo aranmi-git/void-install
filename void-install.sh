@@ -71,7 +71,7 @@
 #  Keep backups.
 # =============================================================================
 
-SCRIPT_VERSION="1.6"
+SCRIPT_VERSION="1.7"
 BACKTITLE="Void Linux installer ${SCRIPT_VERSION}"
 LOG=/tmp/void-install.log
 WARN_FILE=/tmp/void-install.warnings
@@ -127,6 +127,7 @@ EXTRA_PKGS=""
 GPU=auto                # auto | none | list of: intel amd nouveau nvidia nvidia580 nvidia470 nvidia390 vm
 APPS=""                 # list chosen in the Applications menu
 GAMING=""               # list of: multilib steam wine lutris gamemode winetricks
+PERIPH=""               # peripheral support: see periph_table
 XSRC_PKGS=""            # packages to build from source with xbps-src
 XSRC_SETUP=0            # 1 = set up ~/void-packages even when nothing is built
 
@@ -721,7 +722,7 @@ menu_grub_boot() {
 }
 
 menu_enc() {
-	local c p
+	local c
 	c=$(ui --title " Encryption " --default-item "$ENC" --menu "Encrypt the root partition?" 12 78 3 \
 		none "No encryption" \
 		luks1 "LUKS1 - PBKDF2, widest GRUB compatibility" \
@@ -729,16 +730,20 @@ menu_enc() {
 	ENC=$c
 	if encrypted; then
 		if [[ -z $LUKS_PASS ]] || ! yesno "An encryption passphrase is already set.\n\nKeep it?" "Passphrase"; then
-			if p=$(ask_password "Encryption passphrase" "the disk encryption passphrase"); then
-				if ((${#p} < 8)) && ! yesno "This passphrase is shorter than 8 characters.\n\nUse it anyway?" "Weak passphrase" 1; then
-					p=""
-				fi
-				[[ -n $p ]] && LUKS_PASS=$p
-			fi
+			ask_luks_pass || true
 		fi
 		if [[ $BOOTLOADER == grub ]]; then menu_grub_boot || true; fi
 	fi
 	return 0
+}
+
+ask_luks_pass() {
+	local p
+	p=$(ask_password "Encryption passphrase" "the disk encryption passphrase") || return 1
+	if ((${#p} < 8)) && ! yesno "This passphrase is shorter than 8 characters.\n\nUse it anyway?" "Weak passphrase" 1; then
+		return 1
+	fi
+	LUKS_PASS=$p
 }
 
 menu_bootloader() {
@@ -1634,13 +1639,13 @@ menu_gaming() {
 }
 
 menu_xsrc() {
-	local c re='^[A-Za-z0-9._+ -]*$'
+	local c
 	c=$(ui --title " xbps-src " --inputbox \
 		"Packages to BUILD FROM SOURCE with xbps-src (void-packages), separated by spaces. Use it for restricted packages that Void cannot ship as binaries, or for your own templates.\n\nBuilding runs as your user and can take a long time. Leave empty to skip." \
 		13 78 "$XSRC_PKGS") || return 1
 	c=$(trim "$(printf '%s' "$c" | tr ',' ' ' | tr -s ' ')")
-	if [[ ! $c =~ $re ]]; then
-		msg "Package names may only contain letters, digits and . _ + -" "xbps-src"
+	if ! pkg_words_ok "$c"; then
+		msg "Package names may only contain letters, digits and . _ + -, and must start with a letter or digit." "xbps-src"
 		return 1
 	fi
 	XSRC_PKGS=$c
@@ -1655,13 +1660,13 @@ menu_xsrc() {
 }
 
 menu_extras() {
-	local c re='^[A-Za-z0-9._+ -]+$'
+	local c
 	c=$(ui --title " Extra packages " --inputbox \
 		"Additional packages, separated by spaces (optional).\nExamples: firefox vim git htop chrony void-repo-nonfree intel-ucode" \
 		10 78 "$EXTRA_PKGS") || return 1
 	c=$(trim "$(printf '%s' "$c" | tr ',' ' ' | tr -s ' ')")
-	if [[ -n $c && ! $c =~ $re ]]; then
-		msg "Package names may only contain letters, digits and . _ + -" "Extra packages"
+	if ! pkg_words_ok "$c"; then
+		msg "Package names may only contain letters, digits and . _ + -, and must start with a letter or digit." "Extra packages"
 		return 1
 	fi
 	EXTRA_PKGS=$c
@@ -1701,6 +1706,17 @@ validate() {
 	fi
 	if [[ -n $GAMING || -n $nv ]] && ! desktop_on; then
 		yesno "You selected GPU or gaming packages without a desktop. Continue anyway?" "No desktop" 1 || return 1
+	fi
+	if has "$PERIPH" openlinkhub && has "$PERIPH" ckb-next; then
+		msg "Pick ckb-next OR OpenLinkHub in Peripherals: they drive the same Corsair devices." "Peripherals"
+		return 1
+	fi
+	if [[ $LIBC == musl ]] && has "$PERIPH" openlogi; then
+		msg "OpenLogi is only built for glibc. Remove it from Peripherals, or use glibc." "Peripherals"
+		return 1
+	fi
+	if periph_gui && ! desktop_on; then
+		yesno "Some peripheral tools you picked are desktop apps, and no desktop is selected. Continue anyway?" "No desktop" 1 || return 1
 	fi
 
 	if uefi_only && [[ $FIRMWARE != uefi || $EFI_BITS != 64 ]]; then
@@ -1763,6 +1779,7 @@ Desktop     $(lbl_desktop)
 Login       $(lbl_dm); network: $(lbl_net)
 GPU         $(lbl_gpu)
 Software    $(lbl_list "$(trim "$APPS $EXTRA_PKGS")"); gaming: $(lbl_list "$GAMING")
+Peripherals $(lbl_periph)
 xbps-src    $(lbl_xsrc)
 EOF
 }
@@ -2385,6 +2402,274 @@ gaming_packages() {
 	done
 }
 
+# ---- peripherals --------------------------------------------------------------
+# id|menu text (max 39 characters)|Void packages ("-": not from Void, installed by its own function)|needs a desktop
+periph_table() {
+	cat <<'EOF'
+bluetooth|Bluetooth: bluez, Blueman (service)|bluez|0
+solaar|Logitech: Solaar - pairing, battery|Solaar|1
+openlogi|Logitech: OpenLogi beta [not Void]|-|1
+logiops|Logitech: logiops, MX mice (service)|logiops|0
+g810-led|Logitech: G keyboard lighting|g810-led|0
+piper|Gaming mice: Piper (service)|piper|1
+openlinkhub|Corsair: OpenLinkHub [not Void]|-|0
+ckb-next|Corsair: ckb-next (service)|ckb-next|1
+openrazer|Razer: OpenRazer, Polychromatic|openrazer-meta polychromatic|1
+openrgb|RGB lighting, many brands: OpenRGB|openrgb|1
+coolercontrol|Fans, pumps: CoolerControl (service)|coolercontrol|1
+controllers|PlayStation/Switch/Steam/8BitDo pads|steam-udev-rules|0
+xone|Xbox dongle, USB pads: xone (driver)|xone|0
+xpadneo|Xbox pads, Bluetooth: xpadneo (driver)|xpadneo|0
+sc-controller|Gamepad mapper: SC Controller|sc-controller|1
+antimicrox|Gamepad to keys/mouse: AntiMicroX|antimicrox|1
+oversteer|Steering wheels: Oversteer|oversteer|1
+wacom|Drawing tablets: Wacom|xf86-input-wacom libwacom|0
+input-remapper|Key/button remapper (service)|input-remapper|1
+keyd|Key remapping daemon (service)|keyd|0
+kanata|Key remapper: kanata|kanata|0
+EOF
+}
+periph_field() { periph_table | awk -F'|' -v id="$1" -v f="$2" '$1 == id { print $f }'; }
+periph_ids() { periph_table | cut -d'|' -f1; }
+periph_gui() { local p; for p in $PERIPH; do [[ $(periph_field "$p" 4) == 1 ]] && return 0; done; return 1; }
+
+# IDs that match what is plugged in (USB vendor:product) or built in (Bluetooth).
+detect_periph() {
+	local d v p ids="" usb=" "
+	for d in /sys/bus/usb/devices/*; do
+		[[ -r $d/idVendor && -r $d/idProduct ]] || continue
+		v=$(<"$d/idVendor") p=$(<"$d/idProduct")
+		usb+="$v:$p $v "
+	done
+	[[ $usb == *" 046d "* ]] && ids+=" solaar"
+	[[ $usb == *" 1b1c "* ]] && ids+=" openlinkhub"
+	[[ $usb == *" 1532 "* ]] && ids+=" openrazer"
+	[[ $usb =~ \ (054c|057e|28de|2dc8)\  ]] && ids+=" controllers"
+	[[ $usb =~ \ 045e:(02e6|02fe|02f9|091e|02ea|02dd|02e3|0b00|0b12|0b13)\  ]] && ids+=" xone"
+	[[ $usb == *" 056a "* ]] && ids+=" wacom"
+	compgen -G '/sys/class/bluetooth/hci*' >/dev/null && ids+=" bluetooth"
+	trim "$ids"
+}
+
+PERIPH_ASKED=0
+CORSAIR_HELP="Both drive the same Corsair USB devices, so only one can be installed.
+
+\ZbOpenLinkHub\Zn (recommended): newer and actively developed. Covers the iCUE LINK hub with its fans and coolers, Commander Core / Core XT / Pro, most Corsair AIO coolers, many keyboards, mice and headsets, and DDR4/DDR5 memory lighting. Runs as a background service; you set it up in a web browser at http://127.0.0.1:27003. Not in Void: built from a fixed release (0.9.4) during the install, and not updated by xbps.
+
+\Zbckb-next\Zn: in Void's repository and updated with the system. Keyboards and mice only (lighting, macros, remapping); no AIO coolers, fan hubs or iCUE LINK. A desktop app with a tray icon."
+
+menu_periph() {
+	local sel det cur c p
+	local -a items=()
+	det=$(detect_periph)
+	cur=$PERIPH
+	if ((PERIPH_ASKED == 0)) && [[ -z $cur ]]; then cur=$det; fi
+	while IFS='|' read -r p c _ _; do items+=("$p" "$c"); done < <(periph_table)
+	sel=$(checklist "Peripherals" "Detected now: \Zb${det:-nothing known}\Zn (ticked the first time). [not from Void]: downloaded from its project, checked against a fixed checksum, and not updated by xbps. Pick ckb-next OR OpenLinkHub for Corsair." "$cur" "${items[@]}") || return 1
+	PERIPH_ASKED=1
+	if has "$sel" openlinkhub && has "$sel" ckb-next; then
+		c=$(ui --title " Corsair: pick one " --default-item openlinkhub --menu "$CORSAIR_HELP" 22 78 2 \
+			openlinkhub "AIOs, hubs, iCUE LINK, more (recommended)" \
+			ckb-next "keyboards and mice, from Void's repository") || return 1
+		if [[ $c == openlinkhub ]]; then sel=$(without "$sel" ckb-next); else sel=$(without "$sel" openlinkhub); fi
+	fi
+	if [[ $LIBC == musl ]] && has "$sel" openlogi; then
+		msg "OpenLogi is only built for glibc; it was left out. Use Solaar or logiops with musl." "Peripherals"
+		sel=$(without "$sel" openlogi)
+	fi
+	c=0
+	for p in solaar openlogi logiops; do has "$sel" "$p" && c=$((c + 1)); done
+	if ((c > 1)); then
+		yesno "Solaar, OpenLogi and logiops each take over a Logitech device; only one can control a given mouse or receiver at a time. Keep all of them anyway?" "Logitech" 1 || return 1
+	fi
+	PERIPH=$sel
+}
+
+lbl_periph() { lbl_list "$PERIPH"; }
+
+periph_packages() {
+	local p
+	for p in $PERIPH; do
+		case $p in
+			bluetooth)
+				echo bluez
+				if desktop_on; then echo blueman; fi
+				;;
+			*) [[ $(periph_field "$p" 3) == - ]] || periph_field "$p" 3 | tr ' ' '\n' ;;
+		esac
+	done
+}
+
+periph_dkms() { has "$PERIPH" openrazer || has "$PERIPH" xone || has "$PERIPH" xpadneo; }
+
+periph_services() {
+	local p
+	for p in $PERIPH; do
+		case $p in
+			bluetooth | xpadneo) printf '%s\n' dbus bluetoothd ;;
+			logiops) echo logid ;;
+			piper) printf '%s\n' dbus ratbagd ;;
+			openlinkhub) echo openlinkhub ;;
+			ckb-next) echo ckb-next-daemon ;;
+			coolercontrol) echo coolercontrold ;;
+			input-remapper) printf '%s\n' dbus input-remapper ;;
+			keyd) echo keyd ;;
+		esac
+	done
+}
+
+# Build tools added only for an install from source, and removed afterwards.
+TOOLS_ADDED=""
+tools_add() { # tools_add <pkg>...; 1 if they cannot be installed
+	local p add=""
+	for p in "$@"; do
+		in_target xbps-query "$p" >/dev/null 2>&1 || add+=" $p"
+	done
+	[[ -n $add ]] || return 0
+	# shellcheck disable=SC2086
+	in_target stdbuf -oL xbps-install -y $add || return 1
+	TOOLS_ADDED+="$add"
+}
+tools_remove() {
+	[[ -n $TOOLS_ADDED ]] || return 0
+	# shellcheck disable=SC2086
+	if in_target xbps-remove -y $TOOLS_ADDED >/dev/null 2>&1; then
+		echo "Removed the build tools again:$TOOLS_ADDED"
+		in_target xbps-remove -y -o >/dev/null 2>&1 || true
+	else
+		echo "Build tools left installed (another package needs them):$TOOLS_ADDED"
+	fi
+	TOOLS_ADDED=""
+}
+
+sha256_is() { # sha256_is <file> <expected>
+	local got
+	got=$(sha256sum "$1" 2>/dev/null | cut -d' ' -f1)
+	if [[ $got != "$2" ]]; then
+		echo "Checksum mismatch for ${1##*/}: expected $2, got ${got:-nothing}" >&2
+		return 1
+	fi
+}
+
+write_runit_service() { # write_runit_service <name> <run script body>
+	local d=$TARGET/etc/sv/$1
+	mkdir -p "$d/log"
+	printf '#!/bin/sh\n# runit service written by void-install.sh\nexec 2>&1\n%s\n' "$2" >"$d/run"
+	printf '#!/bin/sh\nexec vlogger -t %s -p daemon\n' "$1" >"$d/log/run"
+	chmod 755 "$d/run" "$d/log/run"
+	ln -sfn "/run/runit/supervise.$1" "$d/supervise"
+	ln -sfn "/run/runit/supervise.$1-log" "$d/log/supervise"
+}
+
+# ---- not from Void: pinned releases ---------------------------------------------
+OPENLOGI_VERSION=0.9.0
+OPENLOGI_URL=https://github.com/AprilNEA/OpenLogi/releases/download/v0.9.0/openlogi-v0.9.0-linux-amd64.pkg.tar.zst
+OPENLOGI_SHA256=ba428a1d8043e7ef82c9576e9fa1d37c31be781cca304e59d655af4a0ab045d4
+OPENLINKHUB_VERSION=0.9.4
+OPENLINKHUB_GIT=https://github.com/jurkovic-nikola/OpenLinkHub
+OPENLINKHUB_COMMIT=a08204cf88fd373a0bbdbe1f4382e8c64024adca
+
+# Each install_* below is called in "if": errexit is off, so every step checks itself.
+
+# OpenLogi: the project's signed Linux build (glibc), unpacked into /usr/local.
+install_openlogi() {
+	local d=/tmp/void-openlogi
+	echo "OpenLogi $OPENLOGI_VERSION (not from Void): installing the project's Linux build ..."
+	tools_add bsdtar || return 1
+	rm -rf "$TARGET$d" && mkdir -p "$TARGET$d" || return 1
+	in_target xbps-fetch -o "$d/openlogi.pkg.tar.zst" "$OPENLOGI_URL" || return 1
+	sha256_is "$TARGET$d/openlogi.pkg.tar.zst" "$OPENLOGI_SHA256" || return 1
+	# usr/* -> /usr/local/*, the udev rule -> /etc; no systemd unit, no package metadata.
+	in_target bsdtar -xpf "$d/openlogi.pkg.tar.zst" -C / --exclude '.*' --exclude 'usr/lib' \
+		-s ',^usr/,usr/local/,' || return 1
+	[[ -x $TARGET/usr/local/bin/openlogi-agent ]] || return 1
+	in_target bsdtar -tf "$d/openlogi.pkg.tar.zst" --exclude '.*' --exclude 'usr/lib' |
+		sed -e 's,^usr/,/usr/local/,' -e 's,^etc/,/etc/,' >"$TARGET/usr/local/share/openlogi.files" || true
+	# The agent belongs to the desktop session (Wayland/X11, session bus): start it at login.
+	mkdir -p "$TARGET/etc/xdg/autostart"
+	cat >"$TARGET/etc/xdg/autostart/openlogi-agent.desktop" <<-'DESKTOP'
+		[Desktop Entry]
+		Type=Application
+		Name=OpenLogi agent
+		Comment=Logitech HID++ device control (started by void-install.sh)
+		Exec=/usr/local/bin/openlogi-agent
+		X-GNOME-Autostart-enabled=true
+		NoDisplay=true
+	DESKTOP
+	mkdir -p "$TARGET/etc/modules-load.d"
+	echo uinput >"$TARGET/etc/modules-load.d/openlogi.conf"
+	rm -rf "$TARGET$d"
+	echo "OpenLogi installed: run openlogi-desktop; the agent starts at login. Files: /usr/local/share/openlogi.files"
+}
+
+# OpenLinkHub: a fixed release built with Void's Go, run by runit as its own user.
+install_openlinkhub() {
+	local o=/opt/OpenLinkHub head
+	echo "OpenLinkHub $OPENLINKHUB_VERSION (not from Void): building from source ..."
+	tools_add go gcc git eudev-libudev-devel || return 1
+	rm -rf "$TARGET$o"
+	in_target git -c advice.detachedHead=false clone -q --depth 1 -b "$OPENLINKHUB_VERSION" "$OPENLINKHUB_GIT" "$o" || return 1
+	head=$(in_target git -C "$o" rev-parse HEAD) || return 1
+	if [[ $head != "$OPENLINKHUB_COMMIT" ]]; then
+		echo "OpenLinkHub: tag $OPENLINKHUB_VERSION points to $head, expected $OPENLINKHUB_COMMIT" >&2
+		return 1
+	fi
+	# go.sum pins every Go module; GOTOOLCHAIN=local keeps Void's Go (no toolchain download).
+	in_target /bin/sh -c "cd $o && GOTOOLCHAIN=local GOFLAGS=-mod=readonly GOPATH=/tmp/void-go GOCACHE=/tmp/void-go/cache CGO_ENABLED=1 go build -trimpath -o OpenLinkHub ." || return 1
+	rm -rf "$TARGET/tmp/void-go" "$TARGET$o/.git"
+	[[ -x $TARGET$o/OpenLinkHub ]] || return 1
+	if ! grep -q '^openlinkhub:' "$TARGET/etc/passwd"; then
+		in_target useradd -r -M -d "$o" -s /bin/false openlinkhub || return 1
+	fi
+	in_target chown -R openlinkhub:openlinkhub "$o" || return 1
+	mkdir -p "$TARGET/etc/udev/rules.d"
+	cp "$TARGET$o/99-openlinkhub.rules" "$TARGET/etc/udev/rules.d/99-openlinkhub.rules" || return 1
+	write_runit_service openlinkhub "# Corsair devices get their permissions from udev first.
+udevadm trigger --subsystem-match=usb --attr-match=idVendor=1b1c >/dev/null 2>&1
+udevadm settle --timeout=30 >/dev/null 2>&1
+cd $o || exit 1
+exec chpst -u openlinkhub:openlinkhub ./OpenLinkHub"
+	echo "OpenLinkHub installed: service 'openlinkhub', web UI at http://127.0.0.1:27003"
+}
+
+# After the peripheral packages: drivers from outside Void, configs, groups.
+periph_finish() {
+	local p u ok
+	[[ -n $PERIPH ]] || return 0
+	TOOLS_ADDED=""
+	for p in openlogi openlinkhub; do
+		has "$PERIPH" "$p" || continue
+		ok=0
+		case $p in
+			openlogi) if install_openlogi; then ok=1; fi ;;
+			openlinkhub) if install_openlinkhub; then ok=1; fi ;;
+		esac
+		if ((ok == 0)); then
+			warn "$p could not be installed (details in the log); the rest of the install continues."
+			PERIPH=$(without "$PERIPH" "$p")   # its service is then not enabled
+		fi
+	done
+	tools_remove
+	# logid stops without a config file: start with an empty device list.
+	if has "$PERIPH" logiops && [[ ! -e $TARGET/etc/logid.cfg ]]; then
+		printf '%s\n' '// logiops (void-install.sh): add your devices, see https://github.com/PixlOne/logiops/wiki/Configuration' \
+			'// then: sudo sv restart logid' 'devices: ();' >"$TARGET/etc/logid.cfg"
+	fi
+	# Groups that only exist once their package is installed.
+	for u in "${USERS[@]}"; do
+		if { has "$PERIPH" bluetooth || has "$PERIPH" xpadneo; } && grep -q '^bluetooth:' "$TARGET/etc/group"; then
+			in_target usermod -a -G bluetooth "$u"
+		fi
+		if has "$PERIPH" keyd && grep -q '^keyd:' "$TARGET/etc/group"; then
+			in_target usermod -a -G keyd "$u"
+		fi
+	done
+	if has "$PERIPH" xone; then
+		echo "xone: the wireless dongle needs Microsoft's firmware once; run: sudo xone-get-firmware.sh"
+	fi
+	return 0
+}
+
 # Extra repositories needed by the selections (+ void-repo-* typed by the user)
 needed_repos() {
 	local nv p
@@ -2450,6 +2735,12 @@ install_software() {
 	install_available "applications" "${list[@]}"
 	mapfile -t list < <(gaming_packages)
 	install_available "gaming packages" "${list[@]}"
+	if periph_dkms; then
+		mapfile -t list < <(kernel_headers)
+		install_available "kernel headers (for the peripheral drivers)" "${list[@]}"
+	fi
+	mapfile -t list < <(periph_packages)
+	install_available "peripheral support" "${list[@]}"
 	for p in $EXTRA_PKGS; do
 		if [[ $p != void-repo-* ]]; then extras+=("$p"); fi
 	done
@@ -2486,6 +2777,7 @@ enable_services() {
 		if [[ -n $s ]]; then svcs+=("$s"); fi
 	fi
 	if [[ $SWAP == zram ]]; then svcs+=(zramen); fi
+	while read -r s; do svcs+=("$s"); done < <(periph_services)
 	if has "$(gpu_list)" vm; then
 		case $(vm_type) in
 			virtualbox) svcs+=(vboxservice) ;;
@@ -2864,6 +3156,7 @@ step_packages() {
 	configure_desktop
 	install_software
 	finish_desktop
+	periph_finish
 	enable_services
 }
 
@@ -3970,6 +4263,10 @@ step_finalize() {
 	echo "Boot order (first = default):"
 	in_target /usr/local/bin/void-kernel-order | awk '{ printf "    %d. %s%s\n", NR, $1, (NR == 1 ? "  <- default" : ($2 == "lts" ? "  (LTS)" : "")) }' || true
 	cp "$LOG" "$TARGET/var/log/void-install.log" 2>/dev/null || true
+	# The settings of this install as a preset, to install the same system again.
+	if [[ -d $TARGET/root ]]; then
+		preset_write "$TARGET/root/void-install.preset" "${PRESET_LABEL:-$(printf '%s' "${HOST_NAME,,}" | tr -c 'a-z0-9._-' '-')}" 2>/dev/null || true
+	fi
 	chmod 600 "$TARGET/var/log/void-install.log" 2>/dev/null || true
 	sync
 }
@@ -4026,7 +4323,7 @@ log_settings() {
 		echo "swap=$SWAP swap_size=$SWAP_SIZE kernels=${KERNELS// /,} libc=$LIBC mirror=$MIRROR"
 		echo "hostname=$HOST_NAME keymap=$KEYMAP locale=$LOCALE timezone=$TIMEZONE user=$USER_NAME"
 		echo "net=$NET desktop=$DESKTOP dm=$(desktop_dm) dotfiles=$DOTS extras=$EXTRA_PKGS"
-		echo "gpu=$GPU (effective: $(gpu_list)) apps=$APPS gaming=$GAMING xsrc=$XSRC_PKGS xsrc_setup=$XSRC_SETUP"
+		echo "gpu=$GPU (effective: $(gpu_list)) apps=$APPS gaming=$GAMING peripherals=$PERIPH xsrc=$XSRC_PKGS xsrc_setup=$XSRC_SETUP"
 		local u
 		for u in "${USERS[@]}"; do echo "user=$u sudo=${U_SUDO[$u]}"; done
 		echo "bootstrap: progs=$BS_PROGS dotfiles=$BS_DOTFILES branch=$BS_BRANCH shell=$BS_SHELL power=$BS_POWER"
@@ -4092,7 +4389,8 @@ install_done() {
 			*)
 				cleanup_target
 				clear
-				echo "Done. The installation log was saved to /var/log/void-install.log on the new system."
+				echo "Done. The installation log was saved to /var/log/void-install.log on the new system,"
+				echo "and these settings as a preset to /root/void-install.preset (load it with --preset)."
 				exit 0
 				;;
 		esac
@@ -4133,10 +4431,453 @@ do_install() {
 }
 
 # =============================================================================
+#  Presets: every setting except the disk, passwords and users
+# =============================================================================
+# A preset is a text file:
+#     # void-install preset v1
+#     # name: my-desktop
+#     FS=btrfs
+#     DESKTOP=xfce sway
+# It is never run or sourced. Only the keys in PRESET_KEYS are accepted, each
+# value must pass preset_check, and anything else rejects the whole file.
+# Its ID is <name>@<first 16 hex digits of the SHA-256 of its settings>; loading
+# "<file, link or name>@<ID digits>" refuses a preset whose settings differ.
+PRESET_KEYS=(FS ENC GRUB_BOOT BOOTLOADER SWAP SWAP_SIZE KERNELS LIBC MIRROR HOST_NAME KEYMAP
+	LOCALE TIMEZONE NET DESKTOP DM DOTS GPU APPS GAMING PERIPH EXTRA_PKGS XSRC_PKGS XSRC_SETUP
+	BS_PROGS BS_DOTFILES BS_BRANCH BS_SHELL BS_POWER)
+PRESET_REPO=${VOID_INSTALL_PRESETS:-https://raw.githubusercontent.com/aranmi-git/void-install/main/presets}
+PRESET_MAX_BYTES=65536
+PRESET_ID=""      # ID of the loaded preset (shown in the main menu)
+PRESET_LABEL=""   # its name
+PRESET_ERR=""     # why the last load failed
+PRESET_SKIPPED="" # keys left out by preset_write
+MENU_JUMP=""      # main menu item to highlight next
+declare -A PRESET_NEW=() PRESET_OLD=()
+
+one_of() { # one_of <value> <option>...
+	local v=$1 o
+	shift
+	for o in "$@"; do [[ $v == "$o" ]] && return 0; done
+	return 1
+}
+
+all_of() { # all_of "<words>" <option>... : every word is an option, none twice
+	local w seen=" "
+	[[ $1 =~ ^[A-Za-z0-9._+\ -]*$ ]] || return 1 # no glob characters before splitting
+	for w in $1; do
+		one_of "$w" "${@:2}" || return 1
+		[[ $seen != *" $w "* ]] || return 1
+		seen+="$w "
+	done
+}
+
+pkg_words_ok() { # package names: each starts with a letter or digit (no options)
+	local w
+	[[ $1 =~ ^[A-Za-z0-9._+\ -]*$ ]] || return 1
+	for w in $1; do [[ $w =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || return 1; done
+}
+
+# Is <value> allowed for <key> in a preset?
+preset_check() { # preset_check <key> <value>
+	local k=$1 v=$2 w seen=" "
+	local re_host='[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?'
+	local re_path='(/[A-Za-z0-9._~%+=-]*)*'
+	case $k in
+		FS) one_of "$v" ext4 btrfs ;;
+		ENC) one_of "$v" none luks1 luks2 ;;
+		GRUB_BOOT) one_of "$v" encrypted separate ;;
+		BOOTLOADER) one_of "$v" grub limine systemd-boot refind uki efistub syslinux ;;
+		SWAP) one_of "$v" none zram file ;;
+		SWAP_SIZE) [[ $v =~ ^[1-9][0-9]{0,2}$ ]] && ((v <= 128)) ;;
+		KERNELS)
+			[[ -n $v && $v =~ ^[a-z0-9.\ -]+$ ]] || return 1
+			for w in $v; do
+				[[ $w =~ ^linux([0-9]+\.[0-9]+|-lts|-mainline)?$ && $seen != *" $w "* ]] || return 1
+				seen+="$w "
+			done
+			;;
+		LIBC) one_of "$v" glibc musl ;;
+		MIRROR) [[ $v =~ ^https?://${re_host}${re_path}$ && $v != */current && $v != */current/ ]] ;;
+		HOST_NAME) [[ $v =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] ;;
+		KEYMAP) [[ $v =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$ ]] ;;
+		LOCALE) [[ $v =~ ^[A-Za-z_]+\.UTF-8(@[A-Za-z]+)?$ ]] ;;
+		TIMEZONE)
+			[[ $v == UTC ]] && return 0
+			[[ $v =~ ^[A-Z][A-Za-z_]+(/[A-Za-z0-9_+-]+){1,2}$ ]] || return 1
+			[[ ! -d /usr/share/zoneinfo || -f /usr/share/zoneinfo/$v ]]
+			;;
+		NET) one_of "$v" nm dhcpcd none ;;
+		DESKTOP)
+			[[ $v == none ]] && return 0
+			[[ -n $v ]] || return 1
+			# shellcheck disable=SC2046  # ids are single words
+			all_of "$v" $(desktop_table | cut -d'|' -f1)
+			;;
+		DM) one_of "$v" auto lightdm sddm gdm greetd none ;;
+		DOTS)
+			# shellcheck disable=SC2046
+			all_of "$v" $(dots_table | cut -d'|' -f1)
+			;;
+		GPU)
+			one_of "$v" auto none && return 0
+			[[ -n $v ]] && all_of "$v" intel amd nouveau nvidia nvidia580 nvidia470 nvidia390 vm
+			;;
+		APPS)
+			all_of "$v" firefox chromium thunderbird vlc mpv libreoffice gimp obs keepassxc \
+				telegram-desktop discord flatpak git htop neovim
+			;;
+		GAMING) all_of "$v" multilib steam wine winetricks lutris gamemode ;;
+		PERIPH)
+			# shellcheck disable=SC2046  # ids are single words
+			all_of "$v" $(periph_ids) && ! { has "$v" openlinkhub && has "$v" ckb-next; }
+			;;
+		EXTRA_PKGS | XSRC_PKGS) pkg_words_ok "$v" ;;
+		XSRC_SETUP | BS_POWER) one_of "$v" 0 1 ;;
+		BS_PROGS) [[ -z $v || $v =~ ^https://${re_host}${re_path}$ ]] ;;
+		BS_DOTFILES)
+			[[ -z $v || $v =~ ^https://${re_host}${re_path}$ ||
+				$v =~ ^git@[A-Za-z0-9.-]+:[A-Za-z0-9._~-]+(/[A-Za-z0-9._~-]+)*$ ]]
+			;;
+		BS_BRANCH) [[ -z $v || $v =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]{0,99}$ ]] ;;
+		BS_SHELL) one_of "$v" bash zsh fish ;;
+		*) return 1 ;;
+	esac
+}
+
+preset_norm() { # one value with runs of blanks collapsed
+	local -a w=()
+	read -r -a w <<<"$1" || true
+	printf '%s' "${w[*]}"
+}
+
+# The settings in a fixed order; the ID is computed from exactly this text.
+preset_canon() {
+	local k
+	for k in "${PRESET_KEYS[@]}"; do
+		if [[ -n ${PRESET_NEW[$k]+x} ]]; then printf '%s=%s\n' "$k" "${PRESET_NEW[$k]}"; fi
+	done
+}
+
+preset_hash() { preset_canon | sha256sum | cut -c1-16; }
+preset_hash_full() { preset_canon | sha256sum | cut -d' ' -f1; }
+
+valid_preset_name() { [[ $1 =~ ^[a-z0-9][a-z0-9._-]{0,39}$ ]]; }
+
+# Read a preset file into PRESET_NEW. Nothing is applied. 1 + PRESET_ERR on error.
+preset_parse() { # preset_parse <file>
+	local f=$1 line t k v n=0 bytes
+	PRESET_NEW=() PRESET_ERR="" PRESET_LABEL=""
+	bytes=$(wc -c <"$f" 2>/dev/null) || bytes=-1
+	if ((bytes < 0 || bytes > PRESET_MAX_BYTES)); then
+		PRESET_ERR="The file is missing or larger than $((PRESET_MAX_BYTES / 1024)) KiB."
+		return 1
+	fi
+	if LC_ALL=C grep -q $'[\x01-\x08\x0b\x0e-\x1f\x7f]' "$f" || [[ $(tr -d '\000' <"$f" | wc -c) != "$bytes" ]]; then
+		PRESET_ERR="The file contains control characters; it is not a preset."
+		return 1
+	fi
+	# A preset never holds secrets. Refuse a file that looks like it does (in a
+	# setting or a comment), so a password is not shared by accident.
+	t=$(grep -niE '(^|[^a-z])(pass(word|wd|phrase)?|pw|secret|token|api[_-]?key|private[_-]?key|luks[_-]?key)[a-z_]*[[:space:]]*[=:]' "$f" | head -n 1 | cut -d: -f1)
+	if [[ -n $t ]]; then
+		PRESET_ERR="Line $t looks like a password or other secret. A preset never holds passwords (root, users, encryption) or keys; remove that line."
+		return 1
+	fi
+	while IFS= read -r line || [[ -n $line ]]; do
+		n=$((n + 1))
+		line=${line%$'\r'}
+		if ((n == 1)); then
+			if [[ ! $line =~ ^#\ void-install\ preset\ v1[[:space:]]*$ ]]; then
+				PRESET_ERR="The first line must be: # void-install preset v1"
+				return 1
+			fi
+			continue
+		fi
+		t=$(trim "$line")
+		[[ -z $t ]] && continue
+		if [[ $t == \#* ]]; then
+			if [[ $t =~ ^#\ *name:\ *([a-z0-9][a-z0-9._-]{0,39})$ ]]; then PRESET_LABEL=${BASH_REMATCH[1]}; fi
+			continue
+		fi
+		if [[ ! $t =~ ^([A-Z_]+)=(.*)$ ]]; then
+			PRESET_ERR="Line $n is not KEY=value."
+			return 1
+		fi
+		k=${BASH_REMATCH[1]}
+		v=$(preset_norm "${BASH_REMATCH[2]}")
+		if ! one_of "$k" "${PRESET_KEYS[@]}"; then
+			case $k in
+				DISK | ROOT_PASS | LUKS_PASS | USER_NAME | USERS | U_*) PRESET_ERR="Line $n: $k must not be in a preset; the installer always asks for it." ;;
+				*) PRESET_ERR="Line $n: unknown setting $k." ;;
+			esac
+			return 1
+		fi
+		if [[ -n ${PRESET_NEW[$k]+x} ]]; then
+			PRESET_ERR="Line $n: $k is set twice."
+			return 1
+		fi
+		if ! preset_check "$k" "$v"; then
+			v=${v//\\/}
+			PRESET_ERR="Line $n: invalid value for $k: ${v:0:60}"
+			return 1
+		fi
+		PRESET_NEW[$k]=$v
+	done <"$f"
+	if ((n == 0)); then
+		PRESET_ERR="The file is empty."
+		return 1
+	fi
+	if ((${#PRESET_NEW[@]} == 0)); then
+		PRESET_ERR="The file holds no settings."
+		return 1
+	fi
+	return 0
+}
+
+# Get a preset to <dest>: a local file, an https:// link, or a name from PRESET_REPO.
+preset_fetch() { # preset_fetch <spec> <dest>; sets PRESET_SRC
+	local spec=$1 dest=$2 url
+	PRESET_SRC=""
+	if [[ $spec == https://* ]]; then
+		url=$spec
+	elif [[ $spec =~ ^[a-z][a-z0-9+.-]*:// ]]; then
+		PRESET_ERR="Only https:// links are accepted for presets."
+		return 1
+	elif [[ -e $spec || $spec == */* ]]; then
+		if [[ ! -f $spec || ! -r $spec ]]; then
+			PRESET_ERR="File not found: $spec"
+			return 1
+		fi
+		cp -- "$spec" "$dest" || { PRESET_ERR="Cannot read $spec"; return 1; }
+		PRESET_SRC=$(readlink -f -- "$spec")
+		return 0
+	elif valid_preset_name "$spec"; then
+		if [[ $PRESET_REPO != https://* ]]; then
+			PRESET_ERR="VOID_INSTALL_PRESETS must be an https:// address."
+			return 1
+		fi
+		url="${PRESET_REPO%/}/$spec.preset"
+	else
+		PRESET_ERR="Not a file, an https:// link or a preset name: $spec"
+		return 1
+	fi
+	if [[ $url =~ ^https://[^/]*@ || $url =~ [[:space:]] ]]; then
+		PRESET_ERR="Links with a user name, token or spaces are not accepted."
+		return 1
+	fi
+	PRESET_SRC=$url
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL --proto '=https' --proto-redir '=https' --max-time 60 \
+			--max-filesize "$PRESET_MAX_BYTES" -o "$dest" -- "$url" >/dev/null 2>&1 ||
+			{ PRESET_ERR="Could not download $url"; return 1; }
+	elif command -v xbps-fetch >/dev/null 2>&1; then
+		timeout 60 xbps-fetch -o "$dest" "$url" >/dev/null 2>&1 ||
+			{ PRESET_ERR="Could not download $url"; return 1; }
+	else
+		PRESET_ERR="Neither curl nor xbps-fetch is available to download $url"
+		return 1
+	fi
+	return 0
+}
+
+preset_backup() {
+	local k
+	PRESET_OLD=()
+	for k in "${PRESET_KEYS[@]}"; do PRESET_OLD[$k]=${!k}; done
+}
+
+preset_restore() {
+	local k
+	for k in "${PRESET_KEYS[@]}"; do printf -v "$k" '%s' "${PRESET_OLD[$k]}"; done
+}
+
+# Apply PRESET_NEW; settings it does not name are reset to the defaults.
+preset_apply() {
+	local k
+	FS=ext4 ENC=luks2 BOOTLOADER=grub GRUB_BOOT=encrypted SWAP=zram SWAP_SIZE=4
+	KERNELS="linux linux-lts" LIBC=glibc MIRROR=$DEFAULT_MIRROR HOST_NAME=void KEYMAP=us
+	LOCALE=en_US.UTF-8 TIMEZONE=UTC NET=nm DESKTOP=none DM=auto DOTS="" GPU=auto APPS=""
+	GAMING="" PERIPH="" EXTRA_PKGS="" XSRC_PKGS="" XSRC_SETUP=0 BS_PROGS="" BS_DOTFILES="" BS_BRANCH=""
+	BS_SHELL=bash BS_POWER=0
+	for k in "${PRESET_KEYS[@]}"; do
+		if [[ -n ${PRESET_NEW[$k]+x} ]]; then printf -v "$k" '%s' "${PRESET_NEW[$k]}"; fi
+	done
+	prune_dots
+}
+
+# Problems of the applied preset on this computer (empty: none).
+preset_notes() {
+	if uefi_only && [[ $FIRMWARE != uefi || $EFI_BITS != 64 ]]; then
+		printf '\\Z1%s needs 64-bit UEFI; this computer started with %s. Choose another boot loader.\\Zn\\n' "$(lbl_boot)" "${FIRMWARE^^}"
+	fi
+	if bios_only && [[ $FIRMWARE != bios ]]; then
+		printf '\\Z1%s is for BIOS computers; this one uses UEFI. Choose another boot loader.\\Zn\\n' "$(lbl_boot)"
+	fi
+	if [[ -n $PRUNED ]]; then
+		printf 'Dotfile presets dropped (their desktop is not in the preset): %s\\n' "$PRUNED"
+	fi
+}
+
+preset_summary() { # preset_summary <id> <verified: 0/1/2> -> dialog text
+	local id=$1 ver=$2 ext=""
+	case $ver in
+		1) printf 'Preset   \\Zb%s\\Zn  \\Z2(fingerprint verified)\\Zn\\n' "$id" ;;
+		*) printf 'Preset   \\Zb%s\\Zn\\n         \\Z3Not verified: load it as %s to check it next time.\\Zn\\n' "$id" "$id" ;;
+	esac
+	printf 'From     %s\n\n' "$(printf '%s' "$PRESET_SRC" | mask_secrets)"
+	printf 'Disk     %s, encryption: %s\n' "$FS" "$(enc_desc)"
+	printf 'Boot     %s; swap: %s\n' "$(lbl_boot)" "$(lbl_swap)"
+	printf 'Kernels  %s\n' "$(lbl_kernels)"
+	printf 'System   %s, %s\n' "$LIBC" "$MIRROR"
+	printf 'Host     %s, keymap %s, %s, %s\n' "$HOST_NAME" "$KEYMAP" "$(lbl_locale)" "$TIMEZONE"
+	printf 'Network  %s\n' "$(lbl_net)"
+	printf 'Desktop  %s; login: %s\n' "$(lbl_desktop)" "$(lbl_dm)"
+	printf 'Dotfiles %s\n' "$(lbl_dots)"
+	printf 'GPU      %s\n' "$(lbl_gpu)"
+	printf 'Apps     %s\n' "$(lbl_list "$APPS")"
+	printf 'Gaming   %s\n' "$(lbl_list "$GAMING")"
+	printf 'Devices  %s\n' "$(lbl_periph)"
+	printf 'Packages %s; xbps-src: %s\n' "${EXTRA_PKGS:-(none)}" "$(lbl_xsrc)"
+	if [[ -n $BS_PROGS ]]; then ext+="  programs list: $BS_PROGS\\n"; fi
+	if has "$PERIPH" openlogi; then ext+="  OpenLogi (Logitech): github.com/AprilNEA/OpenLogi, pinned release\\n"; fi
+	if has "$PERIPH" openlinkhub; then ext+="  OpenLinkHub (Corsair): github.com/jurkovic-nikola/OpenLinkHub, pinned release\\n"; fi
+
+	if [[ -n $BS_DOTFILES ]]; then ext+="  dotfiles: $BS_DOTFILES${BS_BRANCH:+ ($BS_BRANCH)}\\n"; fi
+	if [[ -n $ext ]]; then
+		printf '\n\\Z3\\ZbThis preset installs programs and files from outside Void:\\Zn\n%s\\Z3Load it only if you trust these sources.\\Zn\n' "$ext"
+	fi
+	printf '\nNot in a preset (asked next): disk, root password, users%s.\n' "$(encrypted && printf ', encryption passphrase')"
+}
+
+# Fetch, check, show and (if confirmed) apply a preset. 0 = applied.
+preset_load() { # preset_load <file | https link | name>[@ID]
+	local spec expect="" tmp full id ver=0 notes
+	spec=$(trim "$1")
+	if [[ $spec =~ ^(.+)@([0-9A-Fa-f]{16,64})$ ]]; then
+		spec=${BASH_REMATCH[1]}
+		expect=${BASH_REMATCH[2],,}
+	fi
+	tmp=$(mktemp /tmp/void-preset.XXXXXX) || return 1
+	if ! preset_fetch "$spec" "$tmp" || ! preset_parse "$tmp"; then
+		rm -f -- "$tmp"
+		msg "This preset was not loaded:\n\n$(printf '%s' "$PRESET_ERR" | mask_secrets)\n\nNo setting was changed." "Preset" 12 74
+		return 1
+	fi
+	rm -f -- "$tmp"
+	full=$(preset_hash_full)
+	if [[ -n $expect ]]; then
+		if [[ ${full:0:${#expect}} != "$expect" ]]; then
+			msg "\Z1\ZbThe preset does not match its ID.\Zn\n\nExpected: $expect\nFound:    ${full:0:${#expect}}\n\nIt was changed after the ID was made, or it is a different preset. It was not loaded and no setting was changed." "Preset: wrong fingerprint" 13 74
+			return 1
+		fi
+		ver=1
+	fi
+	if [[ -z $PRESET_LABEL ]]; then
+		PRESET_LABEL=$(basename -- "$spec" .preset)
+		valid_preset_name "$PRESET_LABEL" || PRESET_LABEL=preset
+	fi
+	id="$PRESET_LABEL@${full:0:16}"
+	preset_backup
+	preset_apply
+	notes=$(preset_notes)
+	if ! dialog --backtitle "$BACKTITLE" --colors --cr-wrap --no-collapse --title " Load this preset? " --scrollbar \
+		--yes-label "Load" --no-label "Cancel" --yesno "$(preset_summary "$id" "$ver")${notes:+\n\n$notes}" 0 0 >/dev/tty 2>&1; then
+		preset_restore
+		prune_dots
+		return 1
+	fi
+	PRESET_ID=$id
+	printf 'Loaded preset %s from %s (verified: %s)\n' "$id" "$PRESET_SRC" "$ver" | mask_secrets >>"$LOG" 2>/dev/null || true
+	if [[ -n $notes && $notes == *Z1* ]]; then MENU_JUMP=Bootloader; else MENU_JUMP=Install; fi
+	return 0
+}
+
+# Write the current settings as a preset. Values a preset cannot hold
+# (a local programs list, a link with credentials) are left out: PRESET_SKIPPED.
+preset_write() { # preset_write <file> <name>
+	local f=$1 name=$2 k v
+	PRESET_NEW=() PRESET_SKIPPED=""
+	for k in "${PRESET_KEYS[@]}"; do
+		v=$(preset_norm "${!k}")
+		if preset_check "$k" "$v"; then PRESET_NEW[$k]=$v; else PRESET_SKIPPED+="${PRESET_SKIPPED:+ }$k"; fi
+	done
+	(
+		umask 022
+		{
+			echo "# void-install preset v1"
+			echo "# name: $name"
+			echo "# id: $name@$(preset_hash)"
+			echo "# Made by void-install.sh $SCRIPT_VERSION on $(date +%F)."
+			echo "# Load it with:  bash void-install.sh --preset <this file, an https link or a name>"
+			echo "# Disk, passwords and users are never stored here; the installer asks for them."
+			preset_canon
+		} >"$f"
+	)
+}
+
+# Ask for what a preset never contains, then show the main menu.
+preset_quick() {
+	msg "Preset loaded: \Zb$PRESET_ID\Zn\n\nNow the parts a preset never contains: the disk, the root password, the users$(encrypted && printf ' and the encryption passphrase').\n\nAfterwards the main menu opens with \ZbInstall\Zn selected. Every setting can still be changed there." "Preset" 13 70
+	menu_disk || true
+	if [[ -z $ROOT_PASS ]]; then menu_rootpass || true; fi
+	if ((${#USERS[@]} == 0)); then user_dialog || true; fi
+	if encrypted && [[ -z $LUKS_PASS ]]; then ask_luks_pass || true; fi
+	return 0
+}
+
+lbl_preset() {
+	if [[ -n $PRESET_ID ]]; then printf '%s' "$PRESET_ID"; else printf '(none) - load or save all settings'; fi
+}
+
+menu_preset() {
+	local c v name f def
+	c=$(ui --title " Preset " --menu \
+		"A preset holds every setting except the disk, the passwords and the users, so the same system can be installed again with a few answers. Its ID ends in a fingerprint of the settings." \
+		13 78 3 \
+		load "Load a preset: file, https:// link or name" \
+		save "Save the current settings as a preset" \
+		id "Show the ID of the current settings") || return 1
+	case $c in
+		load)
+			v=$(ui --title " Load a preset " --inputbox \
+				"Enter one of:\n  a file:   /mnt/usb/desktop.preset\n  a link:   https://example.org/desktop.preset\n  a name:   xfce-desktop  (from the presets folder of the repository)\n\nAdd @ and the ID's digits to verify it:  xfce-desktop@1a2b3c4d5e6f7a8b" \
+				15 78) || return 1
+			[[ -n $(trim "$v") ]] || return 1
+			preset_load "$v" || return 1
+			preset_quick
+			;;
+		save)
+			def=${PRESET_LABEL:-$(printf '%s' "${HOST_NAME,,}" | tr -c 'a-z0-9._-' '-')}
+			valid_preset_name "$def" || def=my-preset
+			name=$(ui --title " Save a preset " --inputbox "Name (lowercase letters, digits, '.', '_', '-'):" 9 64 "$def") || return 1
+			if ! valid_preset_name "$name"; then
+				msg "Use 1-40 lowercase letters, digits, '.', '_' or '-', starting with a letter or digit." "Preset"
+				return 1
+			fi
+			f=$(ui --title " Save a preset " --inputbox "Save to (a USB stick keeps it; /root is lost when the live system shuts down):" 9 78 "/root/$name.preset") || return 1
+			f=$(trim "$f")
+			if [[ -z $f || -d $f ]]; then msg "Enter a file name, not a folder." "Preset"; return 1; fi
+			if [[ -e $f ]] && ! yesno "$f exists.\n\nReplace it?" "Preset" 1; then return 1; fi
+			if ! preset_write "$f" "$name" 2>/dev/null; then
+				msg "Cannot write $f" "Preset"
+				return 1
+			fi
+			PRESET_LABEL=$name PRESET_ID="$name@$(preset_hash)"
+			msg "Saved: $f\n\nID: \Zb$PRESET_ID\Zn\n\nInstall the same system elsewhere with:\n  bash void-install.sh --preset $f@${PRESET_ID#*@}\n\nOr add the file to the presets/ folder of the repository as $name.preset and use:\n  bash void-install.sh --preset $PRESET_ID${PRESET_SKIPPED:+\n\n\Z3Left out (a preset cannot hold them): $PRESET_SKIPPED\Zn}" "Preset saved" 19 78
+			;;
+		id)
+			preset_write /dev/null "${PRESET_LABEL:-preset}"
+			msg "ID of the current settings:\n\n  \Zb${PRESET_LABEL:-preset}@$(preset_hash)\Zn\n\nIt changes whenever a setting changes. The disk, passwords and users are not part of it.${PRESET_SKIPPED:+\n\n\Z3Not part of a preset: $PRESET_SKIPPED\Zn}" "Preset ID" 13 74
+			;;
+	esac
+	return 0
+}
+
+# =============================================================================
 #  Main menu
 # =============================================================================
-MENU_ORDER=(Disk Filesystem Encryption Bootloader Swap Kernel C-library Mirror Hostname
-	Keyboard Locale Timezone Root-password Users Network Desktop Login Dotfiles GPU Apps Gaming Packages xbps-src Bootstrap Install)
+MENU_ORDER=(Preset Disk Filesystem Encryption Bootloader Swap Kernel C-library Mirror Hostname
+	Keyboard Locale Timezone Root-password Users Network Desktop Login Dotfiles GPU Apps Gaming Peripherals Packages xbps-src Bootstrap Install)
 
 next_item() {
 	local i
@@ -4150,12 +4891,13 @@ next_item() {
 }
 
 main_menu() {
-	local choice next=Disk fw ok
+	local choice next=${1:-Disk} fw ok
 	fw=${FIRMWARE^^}
 	[[ $FIRMWARE == uefi ]] && fw+=" ${EFI_BITS}-bit"
 	while true; do
 		choice=$(ui --title " Void Linux installation " --default-item "$next" --cancel-label "Exit" \
 			--menu "Set the options, then choose \ZbInstall\Zn. Firmware: \Zb$fw\Zn" 0 0 0 \
+			Preset "$(lbl_preset)" \
 			Disk "$(lbl_disk)" \
 			Filesystem "$FS" \
 			Encryption "$(lbl_enc)" \
@@ -4177,6 +4919,7 @@ main_menu() {
 			GPU "$(lbl_gpu)" \
 			Apps "$(lbl_list "$APPS")" \
 			Gaming "$(lbl_list "$GAMING")" \
+			Peripherals "$(lbl_periph)" \
 			Packages "${EXTRA_PKGS:-(none)}" \
 			xbps-src "$(lbl_xsrc)" \
 			Bootstrap "$(lbl_bootstrap)" \
@@ -4191,6 +4934,7 @@ main_menu() {
 		fi
 		ok=0
 		case $choice in
+			Preset) menu_preset || ok=1 ;;
 			Disk) menu_disk || ok=1 ;;
 			Filesystem) menu_fs || ok=1 ;;
 			Encryption) menu_enc || ok=1 ;;
@@ -4212,6 +4956,7 @@ main_menu() {
 			GPU) menu_gpu || ok=1 ;;
 			Apps) menu_apps || ok=1 ;;
 			Gaming) menu_gaming || ok=1 ;;
+			Peripherals) menu_periph || ok=1 ;;
 			Packages) menu_extras || ok=1 ;;
 			xbps-src) menu_xsrc || ok=1 ;;
 			Bootstrap) menu_bootstrap || ok=1 ;;
@@ -4223,6 +4968,10 @@ main_menu() {
 				;;
 		esac
 		if ((ok == 0)); then next=$(next_item "$choice"); else next=$choice; fi
+		if [[ -n $MENU_JUMP ]]; then
+			next=$MENU_JUMP
+			MENU_JUMP=""
+		fi
 	done
 }
 
@@ -4233,10 +4982,17 @@ void-install.sh $SCRIPT_VERSION - menu-driven Void Linux installer
 Run as root from an official Void Linux live ISO (x86_64) with internet access:
     bash void-install.sh
 
+Install from a preset (asks only for the disk, passwords and users):
+    bash void-install.sh --preset xfce-desktop
+    bash void-install.sh --preset /mnt/usb/my.preset@1a2b3c4d5e6f7a8b
+
 LARBS-style post-install on an ALREADY INSTALLED Void system (no disk changes):
     bash void-install.sh --bootstrap
 
 Options:
+    -p, --preset P   load a preset: a file, an https:// link, or a name from
+                     $PRESET_REPO
+                     Add @ID (16+ hex digits) to refuse a changed preset.
     -b, --bootstrap  only create/update a user and run the bootstrap
     -h, --help       show this help
     -V, --version    show the version
@@ -4303,10 +5059,19 @@ bootstrap_main() {
 }
 
 main() {
+	local preset="" start=Disk
 	case ${1:-} in
 		-h | --help) usage; exit 0 ;;
 		-V | --version) echo "$SCRIPT_VERSION"; exit 0 ;;
 		-b | --bootstrap) bootstrap_main ;;
+		-p | --preset)
+			[[ -n ${2:-} && $# -eq 2 ]] || { usage >&2; exit 2; }
+			preset=$2
+			;;
+		--preset=?*)
+			[[ $# -eq 1 ]] || { usage >&2; exit 2; }
+			preset=${1#--preset=}
+			;;
 		"") ;;
 		*) usage >&2; exit 2 ;;
 	esac
@@ -4317,7 +5082,12 @@ main() {
 	ensure_network
 	msg "This installer puts Void Linux on a whole disk.\n\n  * UEFI or BIOS, GPT partitioning\n  * ext4 or btrfs\n  * no encryption, LUKS1 or LUKS2\n  * GRUB, Limine, systemd-boot, rEFInd,\n    UKI, EFISTUB or SYSLINUX\n  * glibc or musl; desktops and window managers\n    (pick several) with dotfile presets\n  * GPU drivers, apps, gaming (32-bit), xbps-src\n  * several users with sudo levels, LARBS-style bootstrap\n\nNothing is written until you confirm the summary and type the disk name.\nLog file: $LOG" \
 		"Welcome" 19 74
-	main_menu
+	if [[ -n $preset ]] && preset_load "$preset"; then
+		preset_quick
+		start=$MENU_JUMP
+		MENU_JUMP=""
+	fi
+	main_menu "$start"
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
